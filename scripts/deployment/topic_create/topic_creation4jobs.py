@@ -6,6 +6,10 @@ import os
 import time
 
 from kafka.admin import KafkaAdminClient, NewTopic
+try:
+    from kafka.admin import NewPartitions
+except ImportError:
+    NewPartitions = None
 from kafka.errors import KafkaError, TopicAlreadyExistsError
 
 logging.basicConfig(level=logging.INFO)
@@ -14,7 +18,7 @@ logger = logging.getLogger(__name__)
 BOOTSTRAP_SERVERS = os.getenv("BOOTSTRAP_SERVERS", "kafka:9092")
 SOURCE_TOPIC_PATTERN = r"^cdc\..*"   # matches all Debezium topics
 INTERNAL_TOPICS = ["internal.capture", "internal.enrich"]
-PARTITION_FACTOR = 1   # can be adjusted
+PARTITION_FACTOR = int(os.getenv("PARTITION_FACTOR", "1"))
 DEFAULT_PARTITIONS = int(os.getenv("DEFAULT_PARTITIONS", "1"))
 MAX_RETRIES = int(os.getenv("KAFKA_READY_RETRIES", "30"))
 RETRY_DELAY_SECONDS = int(os.getenv("KAFKA_READY_DELAY_SECONDS", "2"))
@@ -72,7 +76,30 @@ def create_internal_topics():
     for topic_name in INTERNAL_TOPICS:
         # check if exists
         if topic_name in admin.list_topics():
-            logger.info(f"Topic {topic_name} already exists. Skipping creation.")
+            partitions = admin.describe_topics([topic_name])[0]["partitions"]
+            current_count = len(partitions)
+            if current_count < total and NewPartitions is not None:
+                admin.create_partitions({topic_name: NewPartitions(total_count=total)})
+                logger.info(
+                    "Expanded topic %s from %s to %s partitions.",
+                    topic_name,
+                    current_count,
+                    total,
+                )
+            elif current_count < total:
+                logger.warning(
+                    "Topic %s has %s partitions, target is %s, but this kafka-python "
+                    "version cannot alter partitions.",
+                    topic_name,
+                    current_count,
+                    total,
+                )
+            else:
+                logger.info(
+                    "Topic %s already exists with %s partitions. Skipping creation.",
+                    topic_name,
+                    current_count,
+                )
             continue
         new_topic = NewTopic(
             name=topic_name,

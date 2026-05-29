@@ -7,11 +7,15 @@ for each. Assumes all required topics have been created manually beforehand.
 import os
 import re
 import requests
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
 
-load_dotenv()
+if load_dotenv:
+    load_dotenv()
 
-KAFKA_CONNECT_URL = "http://localhost:8083"
+KAFKA_CONNECT_URL = os.getenv("KAFKA_CONNECT_URL", "http://localhost:8083")
 
 def register_postgres_connector(connector_name, db_host, db_port, db_user, db_password,
                                 db_name, topic_prefix, tables, slot_name, snapshot_mode="initial"):
@@ -45,10 +49,18 @@ def register_postgres_connector(connector_name, db_host, db_port, db_user, db_pa
     url = f"{KAFKA_CONNECT_URL}/connectors"
     resp = requests.post(url, json=config, headers={"Content-Type": "application/json"})
     if resp.status_code in (200, 201, 202):
-        print(f"✅ Registered {connector_name}")
+        print(f"Registered {connector_name}")
         return True
+    if resp.status_code == 409:
+        update_url = f"{KAFKA_CONNECT_URL}/connectors/{connector_name}/config"
+        update_resp = requests.put(update_url, json=config["config"], headers={"Content-Type": "application/json"})
+        if update_resp.status_code in (200, 201, 202):
+            print(f"Updated existing connector {connector_name}")
+            return True
+        print(f"Failed to update {connector_name}: {update_resp.status_code} - {update_resp.text}")
+        return False
     else:
-        print(f"❌ Failed {connector_name}: {resp.status_code} - {resp.text}")
+        print(f"Failed {connector_name}: {resp.status_code} - {resp.text}")
         return False
 
 def discover_databases():
@@ -76,20 +88,28 @@ def discover_databases():
                 db_configs[idx] = config
             else:
                 missing = [k for k, v in config.items() if v is None]
-                print(f"⚠️ Skipping DB{idx} – missing: {missing}")
+                print(f"Skipping DB{idx} - missing: {missing}")
     return db_configs
 
 def main():
+    try:
+        resp = requests.get(f"{KAFKA_CONNECT_URL}/connectors", timeout=5)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"Kafka Connect is not reachable at {KAFKA_CONNECT_URL}: {exc}")
+        return False
+
     db_configs = discover_databases()
     if not db_configs:
         print("No database configurations found in .env (need DB1_HOST, DB1_NAME, ...).")
-        return
+        return False
 
+    ok = True
     for idx, cfg in db_configs.items():
         topic_prefix = f"cdc.{cfg['tenant']}.{cfg['name']}"
         connector_name = f"cdc-connector-{cfg['tenant']}-{cfg['name']}"
 
-        print(f"\n🔌 Registering connector for DB{idx}: {cfg['name']}")
+        print(f"\nRegistering connector for DB{idx}: {cfg['name']}")
         print(f"   Topics prefix: {topic_prefix}")
         print(f"   Tables: {cfg['tables']}")
         print(f"   Slot: {cfg['slot']}")
@@ -106,7 +126,9 @@ def main():
             slot_name=cfg['slot']
         )
         if not success:
-            print(f"   → Make sure the topics ({topic_prefix}.*) exist. Run create_topic.py first.")
+            print(f"   Make sure the topics ({topic_prefix}.*) exist. Run topic_creation.py first.")
+            ok = False
+    return ok
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(0 if main() else 1)

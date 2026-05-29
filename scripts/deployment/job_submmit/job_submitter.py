@@ -19,14 +19,16 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 FLINK_REST_API = os.getenv("FLINK_REST_API", "http://flink-jobmanager:8081")
 JOBS_DIR = os.getenv("JOBS_DIR", "/opt/flink/jobs")
 JOB_FILES = [job.strip() for job in os.getenv("FLINK_JOB_FILES", "").split(",") if job.strip()]
-#FLINK_CLASSPATH_JARS = [
-#   jar.strip()
-#    for jar in os.getenv(
-#        "/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar,"
-#        "/opt/flink/lib/kafka-clients-3.7.0.jar",
-#    ).split(",")
-#    if jar.strip()
-#]
+EXPECTED_JOB_NAME = os.getenv("FLINK_JOB_NAME", "CDC Ingestion Job")
+FLINK_CLASSPATH_JARS = [
+    jar.strip()
+    for jar in os.getenv(
+        "FLINK_CLASSPATH_JARS",
+        "/opt/flink/jars/flink-connector-kafka-3.2.0-1.18.jar,"
+        "/opt/flink/jars/kafka-clients-3.4.0.jar",
+    ).split(",")
+    if jar.strip()
+]
 
 
 def run_command(cmd):
@@ -114,6 +116,17 @@ def create_internal_topics():
     return True
 
 
+def job_running(job_name):
+    try:
+        resp = requests.get(f"{FLINK_REST_API}/jobs/overview", timeout=5)
+        resp.raise_for_status()
+        jobs = resp.json().get("jobs", [])
+        return any(job.get("name") == job_name and job.get("state") == "RUNNING" for job in jobs)
+    except requests.RequestException as exc:
+        logger.warning("Could not check running Flink jobs: %s", exc)
+        return False
+
+
 def discover_jobs():
     if JOB_FILES:
         jobs = JOB_FILES
@@ -136,12 +149,8 @@ def submit_job(job_file):
     """Submit a single Flink job using docker exec."""
     job_path = f"{JOBS_DIR}/{job_file}"
     logger.info(f"Submitting {job_file} ({job_path})...")
-    command = ["flink", "run", "-d", "-py", job_path]   # no -C flags
-    jars = [
-        "/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar",
-        "/opt/flink/lib/kafka-clients-3.2.0.jar"
-    ]
-    for jar in jars:
+    command = ["flink", "run", "-d"]
+    for jar in FLINK_CLASSPATH_JARS:
         command.extend(["-C", f"file://{jar}"])
     command.extend(["-py", job_path])
     output = run_docker_exec(command)
@@ -165,6 +174,9 @@ def main():
         sys.exit(1)
     if not wait_for_flink():
         sys.exit(1)
+    if job_running(EXPECTED_JOB_NAME):
+        logger.info("%s is already running. Skipping submission.", EXPECTED_JOB_NAME)
+        return
 
     # Submit jobs sequentially
     jobs = discover_jobs()

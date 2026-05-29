@@ -1,5 +1,5 @@
 from pyflink.datastream import StreamExecutionEnvironment
-from pyflink.datastream.connectors.kafka import KafkaSource, KafkaSink, KafkaOffsetsInitializer, KafkaRecordSerializationSchema
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.watermark_strategy import WatermarkStrategy
 
@@ -17,16 +17,6 @@ source = KafkaSource.builder() \
     .build()
 
 stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+stream.print()
 
-sink = KafkaSink.builder() \
-    .set_bootstrap_servers("kafka:9092") \
-    .set_record_serializer(
-        KafkaRecordSerializationSchema.builder()
-            .set_topic("internal.capture")
-            .set_value_serialization_schema(SimpleStringSchema())
-            .build()
-    ) \
-    .build()
-
-stream.sink_to(sink)
-env.execute("Simple Forwarder")
+env.execute("Test Consumer")
