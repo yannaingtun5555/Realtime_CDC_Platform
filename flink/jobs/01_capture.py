@@ -38,7 +38,7 @@ class CDCEnrichment(MapFunction):
 
 def main():
     env = StreamExecutionEnvironment.get_execution_environment()
-
+    env.enable_checkpointing(10000)
     source = KafkaSource.builder() \
         .set_bootstrap_servers(KAFKA_BOOTSTRAP) \
         .set_topic_pattern(SOURCE_TOPIC_PATTERN) \
