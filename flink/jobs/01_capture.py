@@ -7,7 +7,12 @@ and writes enriched events to internal.capture.
 
 import json
 from pyflink.datastream import StreamExecutionEnvironment
-from pyflink.datastream.connectors.kafka import KafkaSource, KafkaSink, KafkaRecordSerializationSchema
+from pyflink.datastream.connectors.kafka import (
+    KafkaOffsetsInitializer,
+    KafkaRecordSerializationSchema,
+    KafkaSink,
+    KafkaSource,
+)
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.typeinfo import Types
 from pyflink.common import WatermarkStrategy
@@ -64,7 +69,7 @@ def main():
     source = KafkaSource.builder() \
         .set_bootstrap_servers(KAFKA_BOOTSTRAP) \
         .set_topic_pattern(SOURCE_TOPIC_PATTERN) \
-        .set_starting_offsets(WatermarkStrategy.no_watermarks()) \
+        .set_starting_offsets(KafkaOffsetsInitializer.earliest()) \
         .set_value_only_deserializer(SimpleStringSchema()) \
         .build()
 

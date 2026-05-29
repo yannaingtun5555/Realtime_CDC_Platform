@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""
-Submit three Flink jobs (ingestion, enrichment, sink) to the Flink cluster.
-Uses docker exec to run 'flink run' inside the JobManager container.
-"""
+"""Submit PyFlink jobs to the Flink cluster."""
 
+import os
+import shlex
 import subprocess
 import time
 import sys
@@ -14,24 +13,54 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Configuration
-FLINK_JOBMANAGER_CONTAINER = "cdc-flink-jobmanager"
-FLINK_REST_API = "http://flink-jobmanager:8081"
-JOBS_DIR = "/opt/flink/jobs"
-JOBS = [
-    ("01_ingestion.py", "Ingestion Job"),
-    ("02_enrichment.py", "Enrichment Job"),
-    ("03_sink.py", "Sink to Iceberg Job")
-]
+FLINK_JOBMANAGER_CONTAINER = os.getenv("FLINK_JOBMANAGER_CONTAINER", "cdc-flink-jobmanager")
+KAFKA_CONTAINER = os.getenv("KAFKA_CONTAINER", "cdc-kafka")
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+FLINK_REST_API = os.getenv("FLINK_REST_API", "http://flink-jobmanager:8081")
+JOBS_DIR = os.getenv("JOBS_DIR", "/opt/flink/jobs")
+JOB_FILES = [job.strip() for job in os.getenv("FLINK_JOB_FILES", "").split(",") if job.strip()]
+#FLINK_CLASSPATH_JARS = [
+#   jar.strip()
+#    for jar in os.getenv(
+#        "/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar,"
+#        "/opt/flink/lib/kafka-clients-3.7.0.jar",
+#    ).split(",")
+#    if jar.strip()
+#]
+
+
+def run_command(cmd):
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        logger.error("Command not found: %s", cmd[0])
+        return None
+
+    if result.returncode != 0:
+        logger.error("Command failed: %s", " ".join(shlex.quote(part) for part in cmd))
+        if result.stdout:
+            logger.error("STDOUT: %s", result.stdout.strip())
+        if result.stderr:
+            logger.error("STDERR: %s", result.stderr.strip())
+        return None
+    return result.stdout
+
 
 def run_docker_exec(command):
     """Run a command inside the Flink JobManager container."""
-    cmd = ["docker", "exec", FLINK_JOBMANAGER_CONTAINER] + command.split()
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"Command failed: {' '.join(cmd)}")
-        logger.error(f"STDERR: {result.stderr}")
-        return None
-    return result.stdout
+    return run_command(["docker", "exec", FLINK_JOBMANAGER_CONTAINER] + command)
+
+
+def wait_for_docker():
+    """Wait until the mounted Docker socket is usable."""
+    logger.info("Waiting for Docker socket...")
+    for _ in range(30):
+        if run_command(["docker", "version", "--format", "{{.Server.Version}}"]) is not None:
+            logger.info("Docker is ready.")
+            return True
+        time.sleep(2)
+    logger.error("Docker did not become ready.")
+    return False
 
 def wait_for_flink():
     """Wait for Flink REST API to be ready."""
@@ -54,7 +83,10 @@ def wait_for_kafka():
     for _ in range(30):
         try:
             # Use docker exec on Kafka container to list topics
-            cmd = ["docker", "exec", "cdc-kafka", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+            cmd = [
+                "docker", "exec", KAFKA_CONTAINER, "kafka-topics",
+                "--bootstrap-server", KAFKA_BOOTSTRAP_SERVERS, "--list"
+            ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 logger.info("Kafka is ready.")
@@ -70,41 +102,77 @@ def create_internal_topics():
     topics = ["internal.capture", "internal.enrich"]
     for topic in topics:
         cmd = [
-            "docker", "exec", "cdc-kafka", "kafka-topics",
-            "--bootstrap-server", "localhost:9092",
+            "docker", "exec", KAFKA_CONTAINER, "kafka-topics",
+            "--bootstrap-server", KAFKA_BOOTSTRAP_SERVERS,
             "--create", "--topic", topic,
             "--partitions", "3", "--replication-factor", "1",
             "--if-not-exists"
         ]
-        subprocess.run(cmd, capture_output=True)
+        if run_command(cmd) is None:
+            return False
         logger.info(f"Ensured topic {topic} exists.")
+    return True
 
-def submit_job(job_file, job_name):
+
+def discover_jobs():
+    if JOB_FILES:
+        jobs = JOB_FILES
+    else:
+        try:
+            jobs = sorted(file_name for file_name in os.listdir(JOBS_DIR) if file_name.endswith(".py"))
+        except FileNotFoundError:
+            logger.error("Jobs directory does not exist: %s", JOBS_DIR)
+            return []
+
+    if not jobs:
+        logger.error("No PyFlink job files found in %s.", JOBS_DIR)
+        return []
+
+    logger.info("Jobs to submit: %s", ", ".join(jobs))
+    return jobs
+
+
+def submit_job(job_file):
     """Submit a single Flink job using docker exec."""
     job_path = f"{JOBS_DIR}/{job_file}"
-    logger.info(f"Submitting {job_name} ({job_path})...")
-    output = run_docker_exec(f"flink run -py {job_path} --detached")
+    logger.info(f"Submitting {job_file} ({job_path})...")
+    command = ["flink", "run", "-d", "-py", job_path]   # no -C flags
+    jars = [
+        "/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar",
+        "/opt/flink/lib/kafka-clients-3.2.0.jar"
+    ]
+    for jar in jars:
+        command.extend(["-C", f"file://{jar}"])
+    command.extend(["-py", job_path])
+    output = run_docker_exec(command)
     if output and "Job has been submitted with JobID" in output:
         # Extract Job ID
         for line in output.splitlines():
             if "JobID" in line:
-                logger.info(f"✅ {job_name} submitted. {line.strip()}")
+                logger.info(f"{job_file} submitted. {line.strip()}")
                 return True
     else:
-        logger.error(f"❌ Failed to submit {job_name}. Output: {output}")
+        logger.error(f"Failed to submit {job_file}. Output: {output}")
         return False
     return False
 
 def main():
+    if not wait_for_docker():
+        sys.exit(1)
     if not wait_for_kafka():
         sys.exit(1)
-    create_internal_topics()
+    if not create_internal_topics():
+        sys.exit(1)
     if not wait_for_flink():
         sys.exit(1)
 
     # Submit jobs sequentially
-    for job_file, job_name in JOBS:
-        if not submit_job(job_file, job_name):
+    jobs = discover_jobs()
+    if not jobs:
+        sys.exit(1)
+
+    for job_file in jobs:
+        if not submit_job(job_file):
             sys.exit(1)
         time.sleep(3)  # small gap between submissions
 

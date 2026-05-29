@@ -106,10 +106,13 @@ services:
   flink-jobmanager:
     build: ./flink
     container_name: cdc-flink-jobmanager
+    command: jobmanager  
     ports:
-      - "8082:8082"   # Flink Web UI
+      - "8082:8081"   # Flink Web UI
     environment:
+      ENABLE_BUILT_IN_PLUGINS: true
       JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      FLINK_PYTHON_EXECUTABLE: python3
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         jobmanager.memory.process.size: 1600m
@@ -121,12 +124,14 @@ services:
         fs.s3a.secret.key: minioadmin123
         fs.s3a.path.style.access: true
         fs.s3a.connection.ssl.enabled: false
+        fs.allowed-fallback-filesystems: s3a
         state.backend: rocksdb
-        state.checkpoints.dir: s3a://flink-checkpoints/
-        state.savepoints.dir: s3a://flink-savepoints/
+        state.checkpoints.dir: s3a://flink-checkpoints/checkpoints
+        state.savepoints.dir: s3a://flink-savepoints/savepoints
     volumes:
       - ./flink/usrlib:/opt/flink/usrlib      # for custom JARs
       - ./flink/conf:/opt/flink/conf          # optional overrides
+      - ./flink/jobs:/opt/flink/jobs          # PyFlink jobs submitted by job-submitter
     networks:
       - cdc-net
     depends_on:
@@ -137,8 +142,10 @@ services:
     build: ./flink
     depends_on:
       - flink-jobmanager
+    command: taskmanager
     environment:
       JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      FLINK_PYTHON_EXECUTABLE: python3
       FLINK_PROPERTIES: |
           jobmanager.rpc.address: flink-jobmanager
           taskmanager.numberOfTaskSlots: 2
@@ -148,13 +155,16 @@ services:
           fs.s3a.secret.key: minioadmin123
           fs.s3a.path.style.access: true
           fs.s3a.connection.ssl.enabled: false
+          fs.allowed-fallback-filesystems: s3a
           state.backend: rocksdb
-          state.checkpoints.dir: s3a://flink-checkpoints/
+          state.checkpoints.dir: s3a://flink-checkpoints/checkpoints
     volumes:
       - ./flink/usrlib:/opt/flink/usrlib
+      - ./flink/jobs:/opt/flink/jobs
     networks:
       - cdc-net
     scale: 2   
+
   flink-sql-client:
     image: flink:1.18.1-scala_2.12-java11
     container_name: cdc-flink-sql-client
@@ -171,15 +181,17 @@ services:
     tty: true
     networks:
       - cdc-net
-  #automation:
-    #build: ./scripts/deployment/topic_create
-    #container_name: cdc-automation
-    #depends_on:
-    #  - kafka
-    #networks:
-    #  - cdc-net
-    #environment:
-    #  BOOTSTRAP_SERVERS: kafka:9092
+
+  automation:
+    build: ./scripts/deployment/topic_create
+    container_name: cdc-automation
+    depends_on:
+      - kafka
+    networks:
+      - cdc-net
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      
   job-submitter:
     build: ./scripts/deployment/job_submmit
     container_name: cdc-job-submitter
@@ -188,6 +200,9 @@ services:
       - kafka
     environment:
       - FLINK_JOBMANAGER_CONTAINER=cdc-flink-jobmanager
+      - KAFKA_CONTAINER=cdc-kafka
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - FLINK_CLASSPATH_JARS=/opt/flink/lib/flink-connector-kafka-3.2.0-1.18.jar,/opt/flink/lib/kafka-clients-3.7.0.jar
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # mount Docker socket
       - ./flink/jobs:/opt/flink/jobs                 # share job scripts
