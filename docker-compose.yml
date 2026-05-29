@@ -68,3 +68,132 @@ services:
       INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
     networks:
       - cdc-net
+    
+  minio:
+    image: minio/minio:latest
+    container_name: cdc-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - minio_data:/data
+    networks:
+      - cdc-net
+
+  init-minio:
+    image: minio/mc:latest
+    container_name: cdc-init-minio
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for MinIO API...' &&
+      sleep 3 &&
+      mc alias set local http://minio:9000 minioadmin minioadmin123 &&
+      mc mb local/iceberg-warehouse --ignore-existing &&
+      mc mb local/flink-checkpoints --ignore-existing &&
+      mc mb local/flink-savepoints --ignore-existing &&
+      echo 'Buckets created successfully.' &&
+      exit 0
+      "
+    networks:
+      - cdc-net
+
+  flink-jobmanager:
+    build: ./flink
+    container_name: cdc-flink-jobmanager
+    ports:
+      - "8082:8082"   # Flink Web UI
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 1600m
+        taskmanager.memory.process.size: 1728m
+        taskmanager.numberOfTaskSlots: 2
+        parallelism.default: 2
+        fs.s3a.endpoint: http://minio:9000
+        fs.s3a.access.key: minioadmin
+        fs.s3a.secret.key: minioadmin123
+        fs.s3a.path.style.access: true
+        fs.s3a.connection.ssl.enabled: false
+        state.backend: rocksdb
+        state.checkpoints.dir: s3a://flink-checkpoints/
+        state.savepoints.dir: s3a://flink-savepoints/
+    volumes:
+      - ./flink/usrlib:/opt/flink/usrlib      # for custom JARs
+      - ./flink/conf:/opt/flink/conf          # optional overrides
+    networks:
+      - cdc-net
+    depends_on:
+      - minio
+      - kafka
+
+  flink-taskmanager:
+    build: ./flink
+    depends_on:
+      - flink-jobmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      FLINK_PROPERTIES: |
+          jobmanager.rpc.address: flink-jobmanager
+          taskmanager.numberOfTaskSlots: 2
+          parallelism.default: 2
+          fs.s3a.endpoint: http://minio:9000
+          fs.s3a.access.key: minioadmin
+          fs.s3a.secret.key: minioadmin123
+          fs.s3a.path.style.access: true
+          fs.s3a.connection.ssl.enabled: false
+          state.backend: rocksdb
+          state.checkpoints.dir: s3a://flink-checkpoints/
+    volumes:
+      - ./flink/usrlib:/opt/flink/usrlib
+    networks:
+      - cdc-net
+    scale: 2   
+  flink-sql-client:
+    image: flink:1.18.1-scala_2.12-java11
+    container_name: cdc-flink-sql-client
+    depends_on:
+      - flink-jobmanager
+    environment:
+     FLINK_PROPERTIES: |
+          fs.s3a.endpoint: http://minio:9000
+          fs.s3a.access.key: minioadmin
+          fs.s3a.secret.key: minioadmin123
+          fs.s3a.path.style.access: true
+    command: /opt/flink/bin/sql-client.sh
+    stdin_open: true
+    tty: true
+    networks:
+      - cdc-net
+  #automation:
+    #build: ./scripts/deployment/topic_create
+    #container_name: cdc-automation
+    #depends_on:
+    #  - kafka
+    #networks:
+    #  - cdc-net
+    #environment:
+    #  BOOTSTRAP_SERVERS: kafka:9092
+  job-submitter:
+    build: ./scripts/deployment/job_submmit
+    container_name: cdc-job-submitter
+    depends_on:
+      - flink-jobmanager
+      - kafka
+    environment:
+      - FLINK_JOBMANAGER_CONTAINER=cdc-flink-jobmanager
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # mount Docker socket
+      - ./flink/jobs:/opt/flink/jobs                 # share job scripts
+    networks:
+      - cdc-net
+    restart: "no"   # run once and exit
+volumes:
+  minio_data:
+    driver: local
