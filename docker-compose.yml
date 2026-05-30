@@ -91,9 +91,12 @@ services:
       - minio
     entrypoint: >
       /bin/sh -c "
-      echo 'Waiting for MinIO API...' &&
-      sleep 3 &&
-      mc alias set local http://minio:9000 minioadmin minioadmin123 &&
+      echo 'Waiting for MinIO API to respond...' &&
+      while ! mc alias set local http://cdc-minio:9000 minioadmin minioadmin123 2>/dev/null; do 
+        sleep 1; 
+      done &&
+      echo 'MinIO is up. Configuration alias set.' &&
+      echo 'Creating Buckets...' &&
       mc mb local/iceberg-warehouse --ignore-existing &&
       mc mb local/flink-checkpoints --ignore-existing &&
       mc mb local/flink-savepoints --ignore-existing &&
@@ -124,13 +127,13 @@ services:
         fs.s3a.path.style.access: true
         fs.s3a.connection.ssl.enabled: false
         fs.allowed-fallback-filesystems: s3a
+        fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
         state.backend: filesystem
-        state.checkpoints.dir: file:///opt/flink/checkpoints
+        state.checkpoints.dir: s3a://flink-checkpoints/checkpoints
     volumes:
-      - ./data/flink-checkpoints:/opt/flink/checkpoints   # host volume for checkpoints
-      - ./flink/jobs:/opt/flink/jobs                      # job scripts
+      # - ./data/flink-checkpoints:/opt/flink/checkpoints   # removed for S3
+      - ./flink/jobs:/opt/flink/jobs
       - ./flink/usrlib:/opt/flink/usrlib
-      - ./flink/conf:/opt/flink/conf
     networks:
       - cdc-net
     depends_on:
@@ -149,15 +152,15 @@ services:
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 2
         parallelism.default: 2
-        fs.s3a.endpoint: http://minio:9000
+        fs.s3a.endpoint: http://cdc-minio:9000
         fs.s3a.access.key: minioadmin
         fs.s3a.secret.key: minioadmin123
         fs.s3a.path.style.access: true
         fs.s3a.connection.ssl.enabled: false
-        state.backend: filesystem
-        state.checkpoints.dir: file:///opt/flink/checkpoints
+        fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+        state.backend: hashmap
+        state.checkpoints.dir: s3a://flink-checkpoints/checkpoints
     volumes:
-      - ./data/flink-checkpoints:/opt/flink/checkpoints
       - ./flink/jobs:/opt/flink/jobs
       - ./flink/usrlib:/opt/flink/usrlib
     networks:
@@ -170,11 +173,11 @@ services:
     depends_on:
       - flink-jobmanager
     environment:
-     FLINK_PROPERTIES: |
-          fs.s3a.endpoint: http://minio:9000
-          fs.s3a.access.key: minioadmin
-          fs.s3a.secret.key: minioadmin123
-          fs.s3a.path.style.access: true
+      FLINK_PROPERTIES: |
+        fs.s3a.endpoint: http://minio:9000
+        fs.s3a.access.key: minioadmin
+        fs.s3a.secret.key: minioadmin123
+        fs.s3a.path.style.access: true
     command: /opt/flink/bin/sql-client.sh
     stdin_open: true
     tty: true
@@ -215,14 +218,18 @@ services:
     container_name: cdc-job-watcher
     depends_on:
       - flink-jobmanager
+    environment:
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./flink/jobs:/opt/flink/jobs
       - ./data/flink-checkpoints:/opt/flink/checkpoints 
       - ./flink/watcher-conf:/opt/flink/watcher-conf
-    command: python /opt/flink/jobs/job_watcher.py
+    command: python  -u /opt/flink/jobs/job_watcher.py
     networks:
       - cdc-net
     restart: always
 volumes:
   minio_data:
+    driver: local
+  flink-checkpoints:
     driver: local
