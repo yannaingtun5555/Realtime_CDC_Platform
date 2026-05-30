@@ -217,7 +217,8 @@ services:
       - flink-jobmanager
     volumes:
       - ./flink/jobs:/opt/flink/jobs
-      - ./data/flink-checkpoints:/opt/flink/checkpoints   # optional, if watcher needs to see checkpoints (not needed but harmless)
+      - ./data/flink-checkpoints:/opt/flink/checkpoints 
+      - ./flink/watcher-conf:/opt/flink/watcher-conf
     command: python /opt/flink/jobs/job_watcher.py
     networks:
       - cdc-net

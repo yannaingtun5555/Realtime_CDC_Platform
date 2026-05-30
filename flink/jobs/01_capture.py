@@ -20,21 +20,28 @@ class CDCEnrichment(MapFunction):
     def map(self, value: str):
         try:
             event = json.loads(value)
-            payload = event.get("payload", {})
-            source = payload.get("source", {})
+            source = event.get("source", {})
+            db_name = source.get("db", "unknown")
+            table_name = source.get("table", "unknown")
+            op = event.get("op", "unknown")
+            after = event.get("after", {})
+            before = event.get("before", {})
+            ts_ms = event.get("ts_ms", 0)
+            source_ts_ms = source.get("ts_ms", 0)
+
             enriched = {
-                "db_name": source.get("db", "unknown"),
-                "table_name": source.get("table", "unknown"),
-                "operation": payload.get("op", "unknown"),
-                "before": payload.get("before"),
-                "after": payload.get("after"),
-                "ts_ms": payload.get("ts_ms", 0),
-                "source_ts_ms": source.get("ts_ms", 0),
+                "db_name": db_name,
+                "table_name": table_name,
+                "operation": op,
+                "before": before,
+                "after": after,
+                "ts_ms": ts_ms,
+                "source_ts_ms": source_ts_ms,
             }
             return json.dumps(enriched)
         except Exception as e:
-            print(f"ERROR: {e}, raw: {value[:200]}")
-            return ""
+            print(f"Failed to parse: {e}, raw: {value[:200]}")
+            return ""   # return empty string to avoid None
 
 def main():
     env = StreamExecutionEnvironment.get_execution_environment()

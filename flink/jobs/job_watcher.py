@@ -38,10 +38,10 @@ def get_job_status():
         print(f"Error checking jobs: {e}")
         return [], []
 
-
 def submit_job():
     print("Submitting ingestion job...")
-    cmd = ["flink", "run", "-d"]
+    # Use the Flink REST API endpoint (JobManager)
+    cmd = ["flink", "run", "-m", "cdc-flink-jobmanager:8081", "-d"]
     for jar in JARS:
         cmd.extend(["-C", jar])
     cmd.extend(["-py", JOB_FILE])
@@ -51,7 +51,6 @@ def submit_job():
     if result.stderr:
         print(result.stderr.strip())
     return result.returncode == 0
-
 
 def main():
     print("Job watcher started.")
