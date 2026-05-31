@@ -52,7 +52,7 @@ def main():
     # Enable checkpointing with fixed storage path
     env.enable_checkpointing(10000)
     env.get_checkpoint_config().set_checkpointing_mode(CheckpointingMode.EXACTLY_ONCE)
-    env.get_checkpoint_config().set_checkpoint_storage_dir(CHECKPOINT_DIR)
+    #env.get_checkpoint_config().set_checkpoint_storage_dir(CHECKPOINT_DIR)
     # Optional: limit checkpoint overhead
     env.get_checkpoint_config().set_max_concurrent_checkpoints(1)
     env.get_checkpoint_config().set_min_pause_between_checkpoints(5000)
