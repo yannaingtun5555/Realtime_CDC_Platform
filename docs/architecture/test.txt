@@ -1,0 +1,7 @@
+ consumer------
+ docker exec -it cdc-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic internal.capture --from-beginning
+
+ producer ------
+  docker exec -i cdc-postgres psql -U postgres -d inventory <<EOF
+INSERT INTO inventory.customers (first_name, last_name, email) VALUES ('E2E', 'Test', 'e2e@test.com');
+EOF

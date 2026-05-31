@@ -10,7 +10,7 @@ RUN apt-get update && \
 
 # 1. CREATE PLUGINS DIRECTORY FOR S3 HADOOP
 RUN mkdir -p /opt/flink/plugins/s3-fs-hadoop
-
+RUN pip3 install --no-cache-dir kafka-python
 # 2. DOWNLOAD THE S3 FILE SYSTEM PLUGIN (Matches your Flink version 1.18.1)
 # Note: Keep ONLY this jar here to avoid classpath pollution!
 ADD https://repo.maven.apache.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.18.1/flink-s3-fs-hadoop-1.18.1.jar /opt/flink/plugins/s3-fs-hadoop/

@@ -5,6 +5,8 @@ import subprocess
 import requests
 import time
 import sys
+from kafka.admin import KafkaAdminClient
+from kafka import KafkaConsumer
 
 # ========== ENVIRONMENT ==========
 FLINK_REST_API = os.getenv("FLINK_REST_API", "http://flink-jobmanager:8081")
@@ -16,22 +18,28 @@ MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
 
-# ========== HELPERS ==========
-def setup_mc_alias():
-    """Configure mc alias for MinIO."""
-    subprocess.run([
-        "mc", "alias", "set", MINIO_ALIAS, MINIO_ENDPOINT,
-        MINIO_ACCESS_KEY, MINIO_SECRET_KEY
-    ], capture_output=True)
+def get_kafka_admin():
+    return KafkaAdminClient(bootstrap_servers=KAFKA_BOOTSTRAP, client_id='job-submitter')
 
 def topic_exists(topic_name):
-    """Check if Kafka topic exists."""
-    cmd = ["kafka-topics.sh", "--list", "--bootstrap-server", KAFKA_BOOTSTRAP]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return topic_name in result.stdout.splitlines()
+    consumer = None
+    try:
+        consumer = KafkaConsumer(
+            bootstrap_servers=KAFKA_BOOTSTRAP,
+            client_id='topic-checker',
+            request_timeout_ms=5000,
+            api_version_auto_timeout_ms=5000
+        )
+        topics = consumer.topics()
+        return topic_name in topics
+    except Exception as e:
+        print(f"Error checking topic {topic_name}: {e}")
+        return False
+    finally:
+        if consumer:
+            consumer.close()
 
 def wait_for_topics(topics, max_attempts=30, delay=2):
-    """Wait until all given topics exist."""
     for topic in topics:
         for attempt in range(max_attempts):
             if topic_exists(topic):
@@ -43,8 +51,13 @@ def wait_for_topics(topics, max_attempts=30, delay=2):
             print(f"Topic {topic} still missing after {max_attempts*delay}s. Exiting.")
             sys.exit(1)
 
+def setup_mc_alias():
+    subprocess.run([
+        "mc", "alias", "set", MINIO_ALIAS, MINIO_ENDPOINT,
+        MINIO_ACCESS_KEY, MINIO_SECRET_KEY
+    ], capture_output=True)
+
 def get_latest_savepoint(job_name):
-    """Return the latest savepoint path for the job, or None."""
     dir_path = f"{MINIO_ALIAS}/{SAVEPOINT_BASE_DIR.replace('s3a://', '')}/{job_name.replace(' ', '_')}/"
     cmd = ["mc", "ls", "--json", dir_path]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -57,7 +70,6 @@ def get_latest_savepoint(job_name):
         try:
             entry = json.loads(line)
             if entry.get('type') == 'folder':
-                # entry['key'] is the savepoint directory name
                 savepoints.append((entry.get('lastModified'), entry.get('key')))
         except:
             pass
@@ -70,7 +82,6 @@ def get_latest_savepoint(job_name):
     return full_path
 
 def job_is_running(job_name):
-    """Return True if a job with the given name is in RUNNING state."""
     try:
         resp = requests.get(f"{FLINK_REST_API}/jobs/overview", timeout=5)
         resp.raise_for_status()
@@ -83,24 +94,22 @@ def job_is_running(job_name):
     return False
 
 def submit_job(job_config, from_savepoint=None):
-    """Submit Flink job using flink run command."""
     print(f"Submitting job: {job_config['name']}")
     cmd = ["flink", "run", "-m", "cdc-flink-jobmanager:8081", "-d"]
     if from_savepoint:
         cmd.extend(["--fromSavepoint", from_savepoint])
     for jar in job_config.get("jars", []):
         cmd.extend(["-C", jar])
+    # Only pass the Python script – no additional arguments
     cmd.extend(["-py", job_config["py_file"]])
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.stdout:
         print(result.stdout.strip())
     if result.stderr:
-        # Show warnings but not fatal
         print(result.stderr.strip())
     return result.returncode == 0
 
 def verify_job_running(job_name, max_attempts=10, delay=5):
-    """Poll until the job is RUNNING or timeout."""
     for attempt in range(max_attempts):
         if job_is_running(job_name):
             print(f"Job {job_name} is now RUNNING.")
@@ -110,7 +119,6 @@ def verify_job_running(job_name, max_attempts=10, delay=5):
     print(f"Job {job_name} did not become RUNNING after {max_attempts*delay}s.")
     return False
 
-# ========== MAIN ==========
 def main():
     print("Job submitter started.")
     setup_mc_alias()
@@ -123,7 +131,7 @@ def main():
         print("No jobs defined in config. Exiting.")
         return
 
-    # Optionally, wait for all input/output topics to exist
+    # Wait for all explicitly listed input topics (optional)
     all_topics = set()
     for job in jobs:
         for topic in job.get("input_topics", []):
