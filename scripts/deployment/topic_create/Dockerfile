@@ -1,7 +1,22 @@
-FROM python:3.11-slim
-RUN pip install kafka-python requests
-# The --proxy="" flag tells pip to ignore system proxy settings
-RUN pip install --proxy="" kafka-python -i https://pypi.tuna.tsinghua.edu.cn/simple
+FROM python:3.10-slim
 
-COPY topic_creation4jobs.py /topic_creation4jobs.py
-CMD ["python", "/topic_creation4jobs.py"]
+# Install OpenJDK 21 (available in Trixie) and curl
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-21-jre-headless \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Kafka binaries
+RUN curl -fsSL https://archive.apache.org/dist/kafka/3.4.0/kafka_2.13-3.4.0.tgz | tar -xz -C /opt && \
+    mv /opt/kafka_2.13-3.4.0 /opt/kafka
+
+ENV PATH="/opt/kafka/bin:${PATH}"
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY automation.py .
+
+CMD ["python", "-u", "automation.py"]

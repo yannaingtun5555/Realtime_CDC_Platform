@@ -66,6 +66,11 @@ services:
       VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
       INTERNAL_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
       INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
     networks:
       - cdc-net
     
@@ -135,6 +140,7 @@ services:
       # - ./data/flink-checkpoints:/opt/flink/checkpoints   # removed for S3
       - ./flink/jobs:/opt/flink/jobs
       - ./flink/usrlib:/opt/flink/usrlib
+      - ./config.json:/opt/flink/config.json:ro
     networks:
       - cdc-net
     depends_on:
@@ -165,6 +171,7 @@ services:
     volumes:
       - ./flink/jobs:/opt/flink/jobs
       - ./flink/usrlib:/opt/flink/usrlib
+      - ./config.json:/opt/flink/config.json:ro
     networks:
       - cdc-net
     scale: 2
@@ -189,50 +196,107 @@ services:
   automation:
     build: ./scripts/deployment/topic_create
     container_name: cdc-automation
-    depends_on:
-      - kafka
-    networks:
-      - cdc-net
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_URL: http://kafka-connect:8083
+      CONFIG_PATH: /opt/automation/config.json
+      DB_CONFIG_PATH: /opt/automation/dbconfig.json
+    volumes:
+      - ./config.json:/opt/automation/config.json:ro
+      - ./dbconfig.json:/opt/automation/dbconfig.json:ro
+    depends_on:
+      kafka:
+        condition: service_started
+      kafka-connect:
+        condition: service_healthy
+    networks:
+      - cdc-net
+    restart: "no"
       
   job-submitter:
-    build: ./scripts/deployment/job_submmit
+    build: ./flink
     container_name: cdc-job-submitter
     depends_on:
       - flink-jobmanager
       - kafka
     environment:
-      - FLINK_JOBMANAGER_CONTAINER=cdc-flink-jobmanager
-      - KAFKA_CONTAINER=cdc-kafka
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - FLINK_JOB_FILES=01_capture.py
-      - FLINK_CLASSPATH_JARS=/opt/flink/jars/flink-connector-kafka-3.2.0-1.18.jar,/opt/flink/jars/kafka-clients-3.4.0.jar
+      FLINK_REST_API: http://flink-jobmanager:8081
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      CONFIG_PATH: /opt/job-submitter/config.json
+      SAVEPOINT_BASE_DIR: s3a://flink-savepoints
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock   # mount Docker socket
-      - ./flink/jobs:/opt/flink/jobs                 # share job scripts
+      - ./config.json:/opt/flink/config.json:ro
+      - ./config.json:/opt/job-submitter/config.json:ro
+      - ./scripts/deployment/job_submitter/submitter.py:/opt/flink/submitter.py:ro
+      - ./flink/jobs:/opt/flink/jobs
+      # - ./flink/jars:/opt/flink/jars   ← REMOVE THIS LINE
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - cdc-net
-    restart: "no"   # run once and exit
+    restart: "no"
+    command: python /opt/flink/submitter.py
 
   job-watcher:
     build: ./flink
     container_name: cdc-job-watcher
+    entrypoint: ""                           # clears the default entrypoint
+    command: python -u /opt/flink/jobs/job_watcher.py
     environment:
       - PYTHONUNBUFFERED=1
       - JOB_CONFIG_FILE=/opt/flink/watcher-conf/job-config.json
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin123
       - SAVEPOINT_BASE_DIR=s3a://flink-savepoints
       - SAVEPOINT_INTERVAL_SECONDS=300
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
     volumes:
       - ./flink/jobs:/opt/flink/jobs
-      - ./data/flink-checkpoints:/opt/flink/checkpoints 
       - ./flink/watcher-conf:/opt/flink/watcher-conf
-    command: python -u /opt/flink/jobs/job_watcher.py
+      - ./config.json:/opt/flink/config.json:ro
     networks:
       - cdc-net
     restart: always
+
+  pipeline-watcher:
+    build: ./scripts/deployment/pipeline_watcher
+    container_name: cdc-pipeline-watcher
+    environment:
+      FLINK_REST_API: http://flink-jobmanager:8081
+      CONFIG_PATH: /app/config.json
+      CHECK_INTERVAL_SECONDS: 30
+      SCALE_COOLDOWN_SECONDS: 300
+      COMPOSE_PROJECT: realtime_cdc_platform
+      MIN_TASKMANAGERS: 1
+      MAX_TASKMANAGERS: 4
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock   # to control Docker Compose
+    networks:
+      - cdc-net
+    restart: always
+    depends_on:
+      - flink-jobmanager
+      - flink-taskmanager
+
+  postgres:
+    image: postgres:15
+    container_name: cdc-postgres
+    command: ["postgres", "-c", "wal_level=logical"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: inventory
+    ports:
+      - "5432:5432"
+    networks:
+      - cdc-net
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   minio_data:

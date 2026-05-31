@@ -13,73 +13,81 @@ from pyflink.datastream.connectors.kafka import (
 from pyflink.datastream.functions import MapFunction
 
 KAFKA_BOOTSTRAP = "kafka:9092"
-SOURCE_TOPIC_PATTERN = r"cdc\..*"
-INTERNAL_TOPIC = "internal.capture"
 JOB_NAME = "CDC Ingestion Job"
-# Fixed checkpoint path using job name (no job ID)
-CHECKPOINT_DIR = f"s3a://flink-checkpoints/checkpoints/{JOB_NAME.replace(' ', '_')}"
+CONFIG_PATH = "/opt/flink/config.json"
+
+def load_job_config():
+    with open(CONFIG_PATH, 'r') as f:
+        full_config = json.load(f)
+    for job in full_config.get("jobs", []):
+        if job.get("name") == JOB_NAME:
+            return job
+    raise ValueError(f"Job {JOB_NAME} not found in config.json")
 
 class CDCEnrichment(MapFunction):
     def map(self, value: str):
         try:
             event = json.loads(value)
+            
+            # Filter out non-CDC heartbeats
+            if "op" not in event or "source" not in event:
+                return None
+            
             source = event.get("source", {})
-            db_name = source.get("db", "unknown")
-            table_name = source.get("table", "unknown")
-            op = event.get("op", "unknown")
-            after = event.get("after", {})
-            before = event.get("before", {})
-            ts_ms = event.get("ts_ms", 0)
-            source_ts_ms = source.get("ts_ms", 0)
-
+            after = event.get("after")
+            before = event.get("before")
+            
             enriched = {
-                "db_name": db_name,
-                "table_name": table_name,
-                "operation": op,
-                "before": before,
-                "after": after,
-                "ts_ms": ts_ms,
-                "source_ts_ms": source_ts_ms,
+                "db_name": source.get("db", "unknown"),
+                "table_name": source.get("table", "unknown"),
+                "operation": event.get("op"),
+                "before": before if before else {},
+                "after": after if after else {},
+                "ts_ms": event.get("ts_ms", 0),
+                "source_ts_ms": source.get("ts_ms", 0),
             }
             return json.dumps(enriched)
-        except Exception as e:
-            print(f"Failed to parse: {e}, raw: {value[:200]}")
-            return ""   # empty string to avoid None
+        except Exception:
+            return None
 
 def main():
-    env = StreamExecutionEnvironment.get_execution_environment()
-    
-    # Enable checkpointing with fixed storage path
-    env.enable_checkpointing(10000)
-    env.get_checkpoint_config().set_checkpointing_mode(CheckpointingMode.EXACTLY_ONCE)
-    #env.get_checkpoint_config().set_checkpoint_storage_dir(CHECKPOINT_DIR)
-    # Optional: limit checkpoint overhead
-    env.get_checkpoint_config().set_max_concurrent_checkpoints(1)
-    env.get_checkpoint_config().set_min_pause_between_checkpoints(5000)
+    job_config = load_job_config()
+    input_pattern = job_config.get("input_pattern", r"cdc\..*")
+    output_topic = job_config["output_topic"]
 
+    # Source configuration
     source = KafkaSource.builder() \
         .set_bootstrap_servers(KAFKA_BOOTSTRAP) \
-        .set_topic_pattern(SOURCE_TOPIC_PATTERN) \
+        .set_topic_pattern(input_pattern) \
+        .set_group_id("flink-cdc-group") \
         .set_starting_offsets(KafkaOffsetsInitializer.earliest()) \
         .set_value_only_deserializer(SimpleStringSchema()) \
         .build()
 
-    stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka CDC Source")
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.enable_checkpointing(job_config.get("checkpoint_interval", 10000))
+    env.get_checkpoint_config().set_checkpointing_mode(CheckpointingMode.EXACTLY_ONCE)
 
+    # Pipeline: Source -> Enrich -> Filter None -> Sink
+    stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka CDC Source")
+    
     enriched = stream.map(CDCEnrichment(), output_type=Types.STRING()) \
+                     .filter(lambda x: x is not None) \
                      .name("Enrichment")
 
+    # Sink configuration
     sink = KafkaSink.builder() \
         .set_bootstrap_servers(KAFKA_BOOTSTRAP) \
         .set_record_serializer(
             KafkaRecordSerializationSchema.builder()
-                .set_topic(INTERNAL_TOPIC)
+                .set_topic(output_topic)
                 .set_value_serialization_schema(SimpleStringSchema())
                 .build()
         ) \
         .build()
+        
+    enriched.sink_to(sink).name(f"Write to {output_topic}")
 
-    enriched.sink_to(sink).name("Write to internal.capture")
     env.execute(JOB_NAME)
 
 if __name__ == "__main__":

@@ -17,12 +17,6 @@
       "type": "internal",
       "partitions": 6,
       "replication_factor": 1
-    },
-    {
-      "name": "internal.enrich",
-      "type": "internal",
-      "partitions": 6,
-      "replication_factor": 1
     }
   ],
   "jobs": [
@@ -33,7 +27,7 @@
         "file:///opt/flink/jars/flink-connector-kafka-3.2.0-1.18.jar",
         "file:///opt/flink/jars/kafka-clients-3.4.0.jar"
       ],
-      "input_topics": ["cdc.inventory.customers", "cdc.inventory.orders"],
+      "input_pattern": "cdc\\..*",
       "output_topic": "internal.capture",
       "parallelism": 2,
       "checkpoint_interval": 10000
