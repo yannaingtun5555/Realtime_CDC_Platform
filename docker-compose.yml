@@ -216,18 +216,21 @@ services:
   job-watcher:
     build: ./flink
     container_name: cdc-job-watcher
-    depends_on:
-      - flink-jobmanager
     environment:
       - PYTHONUNBUFFERED=1
+      - JOB_CONFIG_FILE=/opt/flink/watcher-conf/job-config.json
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - SAVEPOINT_BASE_DIR=s3a://flink-savepoints
     volumes:
       - ./flink/jobs:/opt/flink/jobs
       - ./data/flink-checkpoints:/opt/flink/checkpoints 
       - ./flink/watcher-conf:/opt/flink/watcher-conf
-    command: python  -u /opt/flink/jobs/job_watcher.py
+    command: python -u /opt/flink/jobs/job_watcher.py
     networks:
       - cdc-net
     restart: always
+
 volumes:
   minio_data:
     driver: local
