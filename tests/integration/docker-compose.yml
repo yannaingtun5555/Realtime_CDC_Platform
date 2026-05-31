@@ -1,0 +1,16 @@
+data-injector:
+  build: ./scripts/data_injector
+  container_name: cdc-data-injector
+  environment:
+    DB_HOST: postgres
+    DB_PORT: 5432
+    DB_USER: postgres
+    DB_PASSWORD: postgres
+    DB_NAME: inventory
+    INJECT_INTERVAL_SECONDS: 10
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks:
+    - cdc-net
+  restart: unless-stopped   # runs continuously

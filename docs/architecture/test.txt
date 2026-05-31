@@ -5,3 +5,13 @@
   docker exec -i cdc-postgres psql -U postgres -d inventory <<EOF
 INSERT INTO inventory.customers (first_name, last_name, email) VALUES ('E2E', 'Test', 'e2e@test.com');
 EOF
+
+create tabel -----
+docker exec -i cdc-postgres psql -U postgres -d inventory -c \
+"CREATE SCHEMA inventory; \
+ CREATE TABLE inventory.customers ( \
+     id SERIAL PRIMARY KEY, \
+     first_name VARCHAR(255), \
+     last_name VARCHAR(255), \
+     email VARCHAR(255) \
+ );"
