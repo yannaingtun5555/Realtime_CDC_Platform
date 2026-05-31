@@ -224,6 +224,7 @@ services:
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin123
       - SAVEPOINT_BASE_DIR=s3a://flink-savepoints
+      - SAVEPOINT_INTERVAL_SECONDS=300
     volumes:
       - ./flink/jobs:/opt/flink/jobs
       - ./data/flink-checkpoints:/opt/flink/checkpoints 
