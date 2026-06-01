@@ -21,11 +21,12 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
+      - "9093:9093"
     environment:
           KAFKA_BROKER_ID: 1
           KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
         
-          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
           KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9093
           KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
           KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
@@ -97,7 +98,7 @@ services:
     entrypoint: >
       /bin/sh -c "
       echo 'Waiting for MinIO API to respond...' &&
-      while ! mc alias set local http://cdc-minio:9000 minioadmin minioadmin123 2>/dev/null; do 
+      while ! mc alias set local http://minio:9000 minioadmin minioadmin123 2>/dev/null; do 
         sleep 1; 
       done &&
       echo 'MinIO is up. Configuration alias set.' &&
@@ -160,13 +161,14 @@ services:
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 2
         parallelism.default: 2
-        fs.s3a.endpoint: http://cdc-minio:9000
+        fs.s3a.endpoint: http://minio:9000
         fs.s3a.access.key: minioadmin
         fs.s3a.secret.key: minioadmin123
         fs.s3a.path.style.access: true
         fs.s3a.connection.ssl.enabled: false
+        fs.allowed-fallback-filesystems: s3a
         fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
-        state.backend: hashmap
+        state.backend: filesystem
         state.checkpoints.dir: s3a://flink-checkpoints/checkpoints
     volumes:
       - ./flink/jobs:/opt/flink/jobs
@@ -251,7 +253,7 @@ services:
     command: python -u /opt/flink/jobs/job_watcher.py
     environment:
       - PYTHONUNBUFFERED=1
-      - JOB_CONFIG_FILE=/opt/flink/watcher-conf/job-config.json
+      - JOB_CONFIG_FILE=/opt/flink/config.json
       - SAVEPOINT_BASE_DIR=s3a://flink-savepoints
       - SAVEPOINT_INTERVAL_SECONDS=300
       - MINIO_ACCESS_KEY=minioadmin
@@ -276,11 +278,14 @@ services:
       CONFIG_PATH: /app/config.json
       CHECK_INTERVAL_SECONDS: 30
       SCALE_COOLDOWN_SECONDS: 300
-      COMPOSE_PROJECT: realtime_cdc_platform
+      COMPOSE_PROJECT: streamlakecdc
+      COMPOSE_FILE: /workspace/docker-compose.yml
+      COMPOSE_PROJECT_DIRECTORY: /workspace
       MIN_TASKMANAGERS: 1
       MAX_TASKMANAGERS: 4
     volumes:
       - ./config.json:/app/config.json:ro
+      - .:/workspace:ro
       - /var/run/docker.sock:/var/run/docker.sock   # to control Docker Compose
     networks:
       - cdc-net

@@ -10,7 +10,7 @@ from pyflink.datastream.connectors.kafka import (
     KafkaSink,
     KafkaSource,
 )
-from pyflink.datastream.functions import MapFunction
+from pyflink.datastream.functions import FilterFunction, MapFunction
 
 KAFKA_BOOTSTRAP = "kafka:9092"
 JOB_NAME = "CDC Ingestion Job"
@@ -23,6 +23,10 @@ def load_job_config():
         if job.get("name") == JOB_NAME:
             return job
     raise ValueError(f"Job {JOB_NAME} not found in config.json")
+
+class NonNullFilter(FilterFunction):
+    def filter(self, value: str) -> bool:
+        return value is not None
 
 class CDCEnrichment(MapFunction):
     def map(self, value: str):
@@ -72,7 +76,7 @@ def main():
     stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka CDC Source")
     
     enriched = stream.map(CDCEnrichment(), output_type=Types.STRING()) \
-                     .filter(lambda x: x is not None) \
+                     .filter(NonNullFilter()) \
                      .name("Enrichment")
 
     # Sink configuration

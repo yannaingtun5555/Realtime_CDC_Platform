@@ -95,7 +95,8 @@ def job_is_running(job_name):
 
 def submit_job(job_config, from_savepoint=None):
     print(f"Submitting job: {job_config['name']}")
-    cmd = ["flink", "run", "-m", "cdc-flink-jobmanager:8081", "-d"]
+    jobmanager = os.getenv("FLINK_JOBMANAGER", "flink-jobmanager:8081")
+    cmd = ["flink", "run", "-m", jobmanager, "-d"]
     if from_savepoint:
         cmd.extend(["--fromSavepoint", from_savepoint])
     for jar in job_config.get("jars", []):
@@ -131,13 +132,16 @@ def main():
         print("No jobs defined in config. Exiting.")
         return
 
-    # Wait for all explicitly listed input topics (optional)
+    # Wait for input/output topics before submitting (avoids race with automation)
     all_topics = set()
     for job in jobs:
         for topic in job.get("input_topics", []):
             all_topics.add(topic)
         if "output_topic" in job:
             all_topics.add(job["output_topic"])
+    for topic_info in config.get("topics", []):
+        if topic_info.get("type") == "external":
+            all_topics.add(topic_info["name"])
     if all_topics:
         print("Ensuring all required topics exist...")
         wait_for_topics(list(all_topics))

@@ -10,7 +10,9 @@ FLINK_REST_API = os.getenv("FLINK_REST_API", "http://flink-jobmanager:8081")
 CONFIG_PATH = os.getenv("CONFIG_PATH", "/app/config.json")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL_SECONDS", "30"))
 SCALE_COOLDOWN = int(os.getenv("SCALE_COOLDOWN_SECONDS", "300"))   # avoid flapping
-COMPOSE_PROJECT = os.getenv("COMPOSE_PROJECT", "realtime_cdc_platform")
+COMPOSE_PROJECT = os.getenv("COMPOSE_PROJECT", "streamlakecdc")
+COMPOSE_FILE = os.getenv("COMPOSE_FILE", "/workspace/docker-compose.yml")
+COMPOSE_PROJECT_DIRECTORY = os.getenv("COMPOSE_PROJECT_DIRECTORY", "/workspace")
 TASKMANAGER_SERVICE = "flink-taskmanager"
 MIN_TASKMANAGERS = int(os.getenv("MIN_TASKMANAGERS", "1"))
 MAX_TASKMANAGERS = int(os.getenv("MAX_TASKMANAGERS", "4"))
@@ -23,9 +25,17 @@ def load_config():
     with open(CONFIG_PATH, 'r') as f:
         return json.load(f)
 
+def compose_base_cmd():
+    return [
+        "docker", "compose",
+        "-p", COMPOSE_PROJECT,
+        "--project-directory", COMPOSE_PROJECT_DIRECTORY,
+        "-f", COMPOSE_FILE,
+    ]
+
 def get_current_taskmanagers():
     """Return current number of running TaskManager containers."""
-    cmd = ["docker", "compose", "-p", COMPOSE_PROJECT, "ps", "-q", TASKMANAGER_SERVICE]
+    cmd = compose_base_cmd() + ["ps", "-q", TASKMANAGER_SERVICE]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         return current_taskmanagers   # fallback
@@ -39,7 +49,7 @@ def scale_taskmanagers(target):
     if target == current_taskmanagers:
         return
     print(f"Scaling {TASKMANAGER_SERVICE} from {current_taskmanagers} to {target}")
-    cmd = ["docker", "compose", "-p", COMPOSE_PROJECT, "up", "--scale", f"{TASKMANAGER_SERVICE}={target}", "-d"]
+    cmd = compose_base_cmd() + ["up", "--scale", f"{TASKMANAGER_SERVICE}={target}", "-d", "--no-recreate"]
     subprocess.run(cmd, check=True)
     current_taskmanagers = target
     last_scale_time = time.time()

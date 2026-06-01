@@ -28,6 +28,10 @@
         "file:///opt/flink/jars/kafka-clients-3.4.0.jar"
       ],
       "input_pattern": "cdc\\..*",
+      "input_topics": [
+        "cdc.inventory.customers",
+        "cdc.inventory.orders"
+      ],
       "output_topic": "internal.capture",
       "parallelism": 2,
       "checkpoint_interval": 10000
