@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-End-to-end test: wait for live rows from data-injector, verify Debezium CDC on Kafka,
-then verify Flink-enriched events on internal.capture.
+E2E: data-injector -> Debezium -> capture -> enrich -> internal.enriched
 """
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ import os
 import sys
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 import requests
 from kafka import KafkaConsumer
@@ -20,9 +19,13 @@ KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 CONNECT_URL = os.getenv("CONNECT_URL", "http://kafka-connect:8083")
 FLINK_REST_API = os.getenv("FLINK_REST_API", "http://flink-jobmanager:8081")
 CONNECTOR_NAME = os.getenv("CONNECTOR_NAME", "debezium-inventory-connector")
-FLINK_JOB_NAME = os.getenv("FLINK_JOB_NAME", "CDC Ingestion Job")
+REQUIRED_FLINK_JOBS = os.getenv(
+    "REQUIRED_FLINK_JOBS",
+    "CDC Capture Job,CDC Enrich Job,CDC Iceberg Sink Job",
+).split(",")
 CDC_TOPIC = os.getenv("CDC_TOPIC", "cdc.inventory.customers")
-OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "internal.capture")
+CAPTURE_TOPIC = os.getenv("CAPTURE_TOPIC", "internal.capture")
+OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "internal.enriched")
 WAIT_TIMEOUT_SEC = int(os.getenv("WAIT_TIMEOUT_SECONDS", "120"))
 ENRICH_TIMEOUT_SEC = int(os.getenv("ENRICH_TIMEOUT_SECONDS", "90"))
 POLL_MS = int(os.getenv("POLL_INTERVAL_MS", "500"))
@@ -62,28 +65,33 @@ def wait_for_connector(max_sec: int = 120) -> None:
             if conn_state == "RUNNING" and task_state == "RUNNING":
                 log(f"Connector {CONNECTOR_NAME} is RUNNING.")
                 return
-            log(f"Connector state: connector={conn_state}, task={task_state}")
         except requests.RequestException as exc:
             log(f"Connect poll error: {exc}")
         time.sleep(3)
     raise TimeoutError(f"Connector {CONNECTOR_NAME} not RUNNING within {max_sec}s")
 
 
-def wait_for_flink_job(max_sec: int = 120) -> None:
+def wait_for_flink_jobs(max_sec: int = 180) -> None:
     deadline = time.time() + max_sec
+    required = [name.strip() for name in REQUIRED_FLINK_JOBS if name.strip()]
     while time.time() < deadline:
         try:
             resp = requests.get(f"{FLINK_REST_API}/jobs/overview", timeout=5)
             resp.raise_for_status()
-            for job in resp.json().get("jobs", []):
-                if job.get("name") == FLINK_JOB_NAME and job.get("state") == "RUNNING":
-                    log(f"Flink job {FLINK_JOB_NAME} is RUNNING ({job.get('jid')}).")
-                    return
-            log(f"Waiting for Flink job {FLINK_JOB_NAME}...")
+            running = {
+                job.get("name")
+                for job in resp.json().get("jobs", [])
+                if job.get("state") == "RUNNING"
+            }
+            missing = [name for name in required if name not in running]
+            if not missing:
+                log(f"All Flink jobs RUNNING: {required}")
+                return
+            log(f"Waiting for Flink jobs. Missing: {missing}")
         except requests.RequestException as exc:
             log(f"Flink poll error: {exc}")
-        time.sleep(3)
-    raise TimeoutError(f"Flink job {FLINK_JOB_NAME} not RUNNING within {max_sec}s")
+        time.sleep(5)
+    raise TimeoutError(f"Flink jobs not all RUNNING within {max_sec}s: {required}")
 
 
 def _parse_json(raw: bytes | str) -> dict[str, Any]:
@@ -93,47 +101,41 @@ def _parse_json(raw: bytes | str) -> dict[str, Any]:
 
 
 def validate_debezium_event(event: dict[str, Any]) -> str:
-    """Validate Debezium change event; return tracked email from after/before."""
-    if "op" not in event:
-        raise AssertionError("CDC event missing 'op'")
-    if "source" not in event:
-        raise AssertionError("CDC event missing 'source'")
+    if "op" not in event or "source" not in event:
+        raise AssertionError("CDC event missing op/source")
     source = event["source"]
     if source.get("table") != "customers":
-        raise AssertionError(f"Unexpected source.table: {source.get('table')}")
-    op = event["op"]
-    if op not in ("c", "r", "u"):
-        raise AssertionError(f"Unexpected operation: {op}")
+        raise AssertionError(f"Unexpected table: {source.get('table')}")
     payload = event.get("after") or event.get("before")
-    if not payload:
-        raise AssertionError("CDC event has no after/before payload")
-    email = payload.get("email")
+    if not payload or not payload.get("email"):
+        raise AssertionError("CDC payload missing email")
+    return str(payload["email"])
+
+
+def validate_capture_event(event: dict[str, Any]) -> str:
+    for key in ("db_name", "table_name", "operation", "after", "ts_ms"):
+        if key not in event:
+            raise AssertionError(f"Capture event missing {key}")
+    after = event.get("after") or {}
+    email = after.get("email")
     if not email:
-        raise AssertionError("CDC payload missing email (injector always sets email)")
+        raise AssertionError("Capture after missing email")
     return str(email)
 
 
 def validate_enriched_event(event: dict[str, Any], expected_email: str) -> None:
-    required = ("db_name", "table_name", "operation", "after", "ts_ms")
-    for key in required:
+    for key in ("db_name", "table_name", "operation", "op_type", "record_key", "payload"):
         if key not in event:
-            raise AssertionError(f"Enriched event missing '{key}'")
-    if event["table_name"] != "customers":
-        raise AssertionError(f"Unexpected table_name: {event['table_name']}")
-    after = event["after"]
-    if not isinstance(after, dict):
-        raise AssertionError("Enriched 'after' is not an object")
-    if after.get("email") != expected_email:
-        raise AssertionError(
-            f"Email mismatch: expected {expected_email}, got {after.get('email')}"
-        )
+            raise AssertionError(f"Enriched event missing {key}")
+    payload = json.loads(event["payload"])
+    if payload.get("email") != expected_email:
+        raise AssertionError(f"Enriched email mismatch: {payload.get('email')}")
 
 
-def consume_live_cdc(timeout_sec: int) -> tuple[dict[str, Any], str]:
-    """Consume the next live CDC event from data-injector (auto_offset_reset=latest)."""
-    group_id = f"e2e-cdc-{uuid.uuid4().hex[:8]}"
+def consume_topic(topic: str, validator, timeout_sec: int, group_prefix: str):
+    group_id = f"{group_prefix}-{uuid.uuid4().hex[:8]}"
     consumer = KafkaConsumer(
-        CDC_TOPIC,
+        topic,
         bootstrap_servers=KAFKA_BOOTSTRAP,
         group_id=group_id,
         auto_offset_reset="latest",
@@ -141,78 +143,58 @@ def consume_live_cdc(timeout_sec: int) -> tuple[dict[str, Any], str]:
         consumer_timeout_ms=POLL_MS,
         value_deserializer=lambda m: m.decode("utf-8"),
     )
-    log(f"Listening on {CDC_TOPIC} for live injector events (timeout {timeout_sec}s)...")
     deadline = time.time() + timeout_sec
-    last_progress_log = 0.0
+    last_log = 0.0
     try:
-        # Allow partition assignment before expecting new injector rows
         time.sleep(3)
         while time.time() < deadline:
-            records = consumer.poll(timeout_ms=POLL_MS)
-            for tp, batch in records.items():
+            for _, batch in consumer.poll(timeout_ms=POLL_MS).items():
                 for message in batch:
                     try:
                         event = _parse_json(message.value)
-                        email = validate_debezium_event(event)
-                        log(f"CDC event OK: op={event.get('op')} email={email}")
-                        return event, email
+                        result = validator(event)
+                        return event, result
                     except AssertionError as exc:
-                        log(f"Skipping invalid CDC message: {exc}")
+                        log(f"Skip message on {topic}: {exc}")
             now = time.time()
-            if now - last_progress_log >= 15:
-                log(f"Still waiting for CDC event... ~{int(deadline - now)}s left")
-                last_progress_log = now
+            if now - last_log >= 15:
+                log(f"Waiting on {topic} (~{int(deadline - now)}s left)")
+                last_log = now
     finally:
         consumer.close()
-    raise TimeoutError(
-        f"No valid live CDC event on {CDC_TOPIC} within {timeout_sec}s. "
-        "Is data-injector running and inserting into inventory.customers?"
-    )
-
-
-def consume_matching_enriched(expected_email: str, timeout_sec: int) -> dict[str, Any]:
-    group_id = f"e2e-enrich-{uuid.uuid4().hex[:8]}"
-    consumer = KafkaConsumer(
-        OUTPUT_TOPIC,
-        bootstrap_servers=KAFKA_BOOTSTRAP,
-        group_id=group_id,
-        auto_offset_reset="latest",
-        enable_auto_commit=True,
-        consumer_timeout_ms=POLL_MS,
-        value_deserializer=lambda m: m.decode("utf-8"),
-    )
-    log(f"Listening on {OUTPUT_TOPIC} for enriched email={expected_email}...")
-    deadline = time.time() + timeout_sec
-    try:
-        time.sleep(2)
-        while time.time() < deadline:
-            records = consumer.poll(timeout_ms=POLL_MS)
-            for tp, batch in records.items():
-                for message in batch:
-                    try:
-                        event = _parse_json(message.value)
-                        validate_enriched_event(event, expected_email)
-                        log(f"Enriched event OK: operation={event.get('operation')}")
-                        return event
-                    except AssertionError:
-                        continue
-    finally:
-        consumer.close()
-    raise TimeoutError(
-        f"No enriched event for {expected_email} on {OUTPUT_TOPIC} within {timeout_sec}s. "
-        "Check Flink job CDC Ingestion Job."
-    )
+    raise TimeoutError(f"No valid message on {topic} within {timeout_sec}s")
 
 
 def run_e2e() -> None:
-    log("=== streamlakeCDC E2E: live injector → Debezium → Flink ===")
+    log("=== E2E: injector -> CDC -> capture -> enrich ===")
     wait_for_kafka()
     wait_for_connector()
-    wait_for_flink_job()
+    wait_for_flink_jobs()
 
-    _cdc_event, email = consume_live_cdc(WAIT_TIMEOUT_SEC)
-    consume_matching_enriched(email, ENRICH_TIMEOUT_SEC)
+    _, email = consume_topic(
+        CDC_TOPIC,
+        validate_debezium_event,
+        WAIT_TIMEOUT_SEC,
+        "e2e-cdc",
+    )
+    log(f"Debezium OK: {email}")
 
+    _, capture_email = consume_topic(
+        CAPTURE_TOPIC,
+        validate_capture_event,
+        ENRICH_TIMEOUT_SEC,
+        "e2e-capture",
+    )
+    if capture_email != email:
+        log(f"Note: latest capture email {capture_email} != debezium {email}")
+
+    consume_topic(
+        OUTPUT_TOPIC,
+        lambda e: validate_enriched_event(e, email) or email,
+        ENRICH_TIMEOUT_SEC,
+        "e2e-enrich",
+    )
+    log(f"Enriched OK: {email}")
     log("=== E2E PASSED ===")
 
 

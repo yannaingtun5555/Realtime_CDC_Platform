@@ -140,8 +140,7 @@ def main():
         if "output_topic" in job:
             all_topics.add(job["output_topic"])
     for topic_info in config.get("topics", []):
-        if topic_info.get("type") == "external":
-            all_topics.add(topic_info["name"])
+        all_topics.add(topic_info["name"])
     if all_topics:
         print("Ensuring all required topics exist...")
         wait_for_topics(list(all_topics))

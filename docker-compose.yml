@@ -178,38 +178,39 @@ services:
       - cdc-net
     scale: 2
 
-  flink-sql-client:
-    image: flink:1.18.1-scala_2.12-java11
-    container_name: cdc-flink-sql-client
-    depends_on:
-      - flink-jobmanager
-    environment:
-      FLINK_PROPERTIES: |
-        fs.s3a.endpoint: http://minio:9000
-        fs.s3a.access.key: minioadmin
-        fs.s3a.secret.key: minioadmin123
-        fs.s3a.path.style.access: true
-    command: /opt/flink/bin/sql-client.sh
-    stdin_open: true
-    tty: true
-    networks:
-      - cdc-net
-
-  automation:
-    build: ./scripts/deployment/topic_create
-    container_name: cdc-automation
+  topic-automation:
+    build: ./scripts/deployment/automation
+    container_name: cdc-topic-automation
+    command: ["python", "-u", "01_topic_creation.py"]
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
-      CONNECT_URL: http://kafka-connect:8083
       CONFIG_PATH: /opt/automation/config.json
-      DB_CONFIG_PATH: /opt/automation/dbconfig.json
     volumes:
       - ./config.json:/opt/automation/config.json:ro
-      - ./dbconfig.json:/opt/automation/dbconfig.json:ro
     depends_on:
       kafka:
         condition: service_started
+    networks:
+      - cdc-net
+    restart: "no"
+
+  connector-automation:
+    build: ./scripts/deployment/automation
+    container_name: cdc-connector-automation
+    command: ["python", "-u", "02_register_connectors.py"]
+    environment:
+      CONNECT_URL: http://kafka-connect:8083
+      DB_CONFIG_PATH: /opt/automation/dbconfig.json
+      CONNECTORS_DIR: /opt/automation/connectors
+    volumes:
+      - ./dbconfig.json:/opt/automation/dbconfig.json:ro
+      - ./connectors:/opt/automation/connectors:ro
+    depends_on:
       kafka-connect:
+        condition: service_healthy
+      topic-automation:
+        condition: service_completed_successfully
+      postgres:
         condition: service_healthy
     networks:
       - cdc-net
@@ -223,7 +224,7 @@ services:
         condition: service_started
       kafka:
         condition: service_started
-      automation:
+      connector-automation:
         condition: service_completed_successfully
     environment:
       FLINK_REST_API: http://flink-jobmanager:8081
@@ -329,7 +330,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      automation:
+      connector-automation:
         condition: service_completed_successfully
     networks:
       - cdc-net
@@ -343,9 +344,10 @@ services:
       CONNECT_URL: http://kafka-connect:8083
       FLINK_REST_API: http://flink-jobmanager:8081
       CONNECTOR_NAME: debezium-inventory-connector
-      FLINK_JOB_NAME: CDC Ingestion Job
+      FLINK_JOB_NAME: CDC Capture Job
       CDC_TOPIC: cdc.inventory.customers
-      OUTPUT_TOPIC: internal.capture
+      CAPTURE_TOPIC: internal.capture
+      OUTPUT_TOPIC: internal.enriched
       WAIT_TIMEOUT_SECONDS: 120
       ENRICH_TIMEOUT_SECONDS: 90
     depends_on:
@@ -353,7 +355,7 @@ services:
         condition: service_started
       kafka-connect:
         condition: service_healthy
-      automation:
+      connector-automation:
         condition: service_completed_successfully
       job-submitter:
         condition: service_completed_successfully
