@@ -88,7 +88,8 @@ def get_latest_savepoint(job_name):
 
 def submit_job(job_config, from_savepoint=None):
     print(f"Submitting job: {job_config['name']}")
-    cmd = ["flink", "run", "-m", "cdc-flink-jobmanager:8081", "-d"]
+    jobmanager = os.getenv("FLINK_JOBMANAGER", "flink-jobmanager:8081")
+    cmd = ["flink", "run", "-m", jobmanager, "-d"]
     if from_savepoint:
         cmd.extend(["--fromSavepoint", from_savepoint])
     for jar in job_config.get("jars", []):

@@ -17,18 +17,64 @@
       "type": "internal",
       "partitions": 6,
       "replication_factor": 1
+    },
+    {
+      "name": "internal.enriched",
+      "type": "internal",
+      "partitions": 6,
+      "replication_factor": 1
     }
   ],
   "jobs": [
     {
-      "name": "CDC Ingestion Job",
+      "name": "CDC Capture Job",
       "py_file": "/opt/flink/jobs/01_capture.py",
       "jars": [
         "file:///opt/flink/jars/flink-connector-kafka-3.2.0-1.18.jar",
         "file:///opt/flink/jars/kafka-clients-3.4.0.jar"
       ],
       "input_pattern": "cdc\\..*",
+      "input_topics": [
+        "cdc.inventory.customers",
+        "cdc.inventory.orders"
+      ],
       "output_topic": "internal.capture",
+      "parallelism": 2,
+      "checkpoint_interval": 10000
+    },
+    {
+      "name": "CDC Enrich Job",
+      "py_file": "/opt/flink/jobs/02_enrich.py",
+      "jars": [
+        "file:///opt/flink/jars/flink-connector-kafka-3.2.0-1.18.jar",
+        "file:///opt/flink/jars/kafka-clients-3.4.0.jar"
+      ],
+      "input_topic": "internal.capture",
+      "input_topics": ["internal.capture"],
+      "output_topic": "internal.enriched",
+      "parallelism": 2,
+      "checkpoint_interval": 10000
+    },
+    {
+      "name": "CDC Iceberg Sink Job",
+      "py_file": "/opt/flink/jobs/03_insert.py",
+      "jars": [
+        "file:///opt/flink/jars/flink-connector-kafka-3.2.0-1.18.jar",
+        "file:///opt/flink/jars/kafka-clients-3.4.0.jar",
+        "file:///opt/flink/jars/flink-json-1.18.1.jar",
+        "file:///opt/flink/jars/iceberg/iceberg-flink-runtime-1.18-1.6.1.jar",
+        "file:///opt/flink/jars/iceberg/hadoop-common-3.3.4.jar",
+        "file:///opt/flink/jars/iceberg/hadoop-hdfs-client-3.3.4.jar",
+        "file:///opt/flink/jars/iceberg/hadoop-auth-3.3.4.jar",
+        "file:///opt/flink/jars/iceberg/hadoop-aws-3.3.4.jar",
+        "file:///opt/flink/jars/iceberg/commons-configuration2-2.10.1.jar",
+        "file:///opt/flink/jars/iceberg/stax2-api-4.2.1.jar",
+        "file:///opt/flink/jars/iceberg/woodstox-core-6.4.0.jar"
+      ],
+      "input_topic": "internal.enriched",
+      "input_topics": ["internal.enriched"],
+      "table_api": true,
+      "verify_timeout_seconds": 90,
       "parallelism": 2,
       "checkpoint_interval": 10000
     }

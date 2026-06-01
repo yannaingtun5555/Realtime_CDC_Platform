@@ -1,0 +1,17 @@
+{
+  "database_name": "inventory",
+  "connectors": [
+    {
+      "name": "debezium-inventory-connector",
+      "table_include_list": "inventory.customers,inventory.orders",
+      "snapshot_mode": "initial",
+      "topic_prefix": "cdc",
+      "database_server_name": "inventory",
+      "publication_name": "dbz_pub_inventory",
+      "slot_name": "dbz_slot_inventory",
+      "heartbeat_interval_ms": 5000,
+      "plugin_name": "pgoutput",
+      "publication_autocreate_mode": "filtered"
+    }
+  ]
+}

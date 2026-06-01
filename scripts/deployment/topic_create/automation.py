@@ -72,7 +72,7 @@ def deploy_connector_for_database(db_name, db_config, tables):
         "config": {
             "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
             "database.hostname": db_config["host"],
-            "database.port": "5432",
+            "database.port": str(db_config.get("port", 5432)),
             "database.user": db_config["user"],
             "database.password": db_config["password"],
             "database.dbname": db_config["dbname"],
