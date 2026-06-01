@@ -23,7 +23,7 @@ KAFKA_CONNECTOR_JARS = [
     "file:///opt/flink/jars/flink-connector-kafka-3.2.0-1.18.jar",
     "file:///opt/flink/jars/kafka-clients-3.4.0.jar",
 ]
-ICEBERG_JAR = "file:///opt/flink/lib/iceberg/iceberg-flink-runtime-1.18-1.6.1.jar"
+ICEBERG_JAR = "file:///opt/flink/lib/iceberg-flink-runtime-1.18-1.6.1.jar"
 JSON_JAR = "file:///opt/flink/jars/flink-json-1.18.1.jar"
 TABLE_SINK_JARS = KAFKA_CONNECTOR_JARS + [ICEBERG_JAR, JSON_JAR]
 

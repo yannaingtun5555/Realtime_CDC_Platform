@@ -16,10 +16,9 @@ RUN pip3 install --no-cache-dir kafka-python
 ADD https://repo.maven.apache.org/maven2/org/apache/flink/flink-s3-fs-hadoop/1.18.1/flink-s3-fs-hadoop-1.18.1.jar /opt/flink/plugins/s3-fs-hadoop/
 RUN chmod 644 /opt/flink/plugins/s3-fs-hadoop/*.jar
 
-# Job jars live outside /opt/flink/lib so PyFlink can ship them with pipeline.jars
-# without also loading a second copy from Flink's global classpath.
-RUN mkdir -p /opt/flink/lib/iceberg
+# Iceberg on global classpath (required for CREATE CATALOG during flink run -py).
 ADD https://repo.maven.apache.org/maven2/org/apache/iceberg/iceberg-flink-runtime-1.18/1.6.1/iceberg-flink-runtime-1.18-1.6.1.jar /opt/flink/lib/
+RUN chmod 644 /opt/flink/lib/iceberg-flink-runtime-1.18-1.6.1.jar
 
 RUN mkdir -p /opt/flink/jars
 ADD https://repo.maven.apache.org/maven2/org/apache/flink/flink-connector-kafka/3.2.0-1.18/flink-connector-kafka-3.2.0-1.18.jar /opt/flink/jars/

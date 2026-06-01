@@ -5,7 +5,7 @@ import os
 from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.table import StreamTableEnvironment
 
-from job_utils import ICEBERG_JAR, JSON_JAR, KAFKA_CONNECTOR_JARS, load_job_config
+from job_utils import TABLE_SINK_JARS, load_job_config
 
 JOB_NAME = "CDC Iceberg Sink Job"
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
@@ -32,10 +32,11 @@ def main() -> None:
     env = StreamExecutionEnvironment.get_execution_environment()
     env.enable_checkpointing(job.get("checkpoint_interval", 10000))
     env.set_parallelism(job.get("parallelism", 2))
+    for jar in TABLE_SINK_JARS:
+        env.add_jars(jar)
 
     table_env = StreamTableEnvironment.create(env)
-    pipeline_jars = ";".join(KAFKA_CONNECTOR_JARS + [ICEBERG_JAR, JSON_JAR])
-    table_env.get_config().set("pipeline.jars", pipeline_jars)
+    table_env.get_config().set("pipeline.jars", ";".join(TABLE_SINK_JARS))
     table_env.get_config().set("pipeline.name", JOB_NAME)
     table_env.get_config().set("execution.runtime-mode", "streaming")
     _configure_s3(table_env)
