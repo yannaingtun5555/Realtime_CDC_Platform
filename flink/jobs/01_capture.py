@@ -3,7 +3,7 @@
 import json
 
 from pyflink.common.typeinfo import Types
-from pyflink.datastream.functions import FilterFunction, MapFunction
+from pyflink.datastream.functions import FlatMapFunction
 
 from job_utils import (
     build_execution_env,
@@ -16,19 +16,22 @@ from job_utils import (
 JOB_NAME = "CDC Capture Job"
 
 
-class NonNullFilter(FilterFunction):
-    def filter(self, value: str) -> bool:
-        return value is not None
+class CaptureNormalize(FlatMapFunction):
+    """Normalize a raw Debezium event, emitting 0 records on bad input.
 
+    BUG FIX: Was MapFunction returning None into a Types.STRING() stream.
+    Flink's typed DataStream cannot hold null values — this caused runtime
+    NullPointerException / serialization failures before the downstream
+    NonNullFilter ever ran. FlatMapFunction emits 0 or 1 elements cleanly.
+    """
 
-class CaptureNormalize(MapFunction):
-    def map(self, value: str):
+    def flat_map(self, value: str):
         try:
             event = json.loads(value)
             if "op" not in event or "source" not in event:
-                return None
+                return
             source = event.get("source", {})
-            return json.dumps(
+            yield json.dumps(
                 {
                     "db_name": source.get("db", "unknown"),
                     "table_name": source.get("table", "unknown"),
@@ -40,7 +43,7 @@ class CaptureNormalize(MapFunction):
                 }
             )
         except (json.JSONDecodeError, TypeError):
-            return None
+            return
 
 
 def main() -> None:
@@ -52,8 +55,7 @@ def main() -> None:
     )
     stream = read_stream(env, source, "Debezium CDC Source")
     captured = (
-        stream.map(CaptureNormalize(), output_type=Types.STRING())
-        .filter(NonNullFilter())
+        stream.flat_map(CaptureNormalize(), output_type=Types.STRING())
         .name("Capture Normalize")
     )
     captured.sink_to(kafka_sink(job["output_topic"])).name(

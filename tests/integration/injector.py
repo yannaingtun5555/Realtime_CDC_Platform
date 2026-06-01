@@ -24,6 +24,7 @@ def get_connection():
 def main():
     print(f"Starting data injector. Inserting a random customer every {INTERVAL} seconds.")
     while True:
+        conn = None
         try:
             conn = get_connection()
             cur = conn.cursor()
@@ -49,11 +50,19 @@ def main():
                 (first, last, email)
             )
             conn.commit()
-            print(f"[{datetime.now().isoformat()}] Inserted: {first} {last} <{email}>")
             cur.close()
-            conn.close()
+            print(f"[{datetime.now().isoformat()}] Inserted: {first} {last} <{email}>")
         except Exception as e:
             print(f"Error: {e}")
+        finally:
+            # BUG FIX: conn was only closed on the happy path. Any exception
+            # between get_connection() and conn.close() left the connection
+            # open, slowly exhausting Postgres's max_connections.
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
         time.sleep(INTERVAL)
 
 if __name__ == "__main__":
