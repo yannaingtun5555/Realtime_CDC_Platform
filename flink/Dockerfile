@@ -24,6 +24,7 @@ ADD https://repo.maven.apache.org/maven2/org/apache/iceberg/iceberg-flink-runtim
 RUN mkdir -p /opt/flink/jars
 ADD https://repo.maven.apache.org/maven2/org/apache/flink/flink-connector-kafka/3.2.0-1.18/flink-connector-kafka-3.2.0-1.18.jar /opt/flink/jars/
 ADD https://repo.maven.apache.org/maven2/org/apache/kafka/kafka-clients/3.4.0/kafka-clients-3.4.0.jar /opt/flink/jars/
+ADD https://repo.maven.apache.org/maven2/org/apache/flink/flink-json/1.18.1/flink-json-1.18.1.jar /opt/flink/jars/
 RUN chmod 644 /opt/flink/jars/*.jar
 RUN wget https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc && \
 chmod +x /usr/local/bin/mc

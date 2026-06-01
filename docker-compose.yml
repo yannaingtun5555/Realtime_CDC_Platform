@@ -121,6 +121,10 @@ services:
     environment:
       JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
       FLINK_PYTHON_EXECUTABLE: python3
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      S3_ENDPOINT: http://minio:9000
+      CONFIG_PATH: /opt/flink/config.json
       FLINK_PROPERTIES: |
         state.checkpoints.subdirectory.job-id: false
         jobmanager.rpc.address: flink-jobmanager
@@ -156,6 +160,11 @@ services:
     environment:
       JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
       FLINK_PYTHON_EXECUTABLE: python3
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      S3_ENDPOINT: http://minio:9000
+      CONFIG_PATH: /opt/flink/config.json
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       FLINK_PROPERTIES: |
         state.checkpoints.subdirectory.job-id: false
         jobmanager.rpc.address: flink-jobmanager
