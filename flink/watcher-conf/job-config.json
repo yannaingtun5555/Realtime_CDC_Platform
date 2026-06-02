@@ -19,6 +19,7 @@
     {
       "name": "CDC Iceberg Sink Job",
       "py_file": "/opt/flink/jobs/03_insert.py",
+      "table_api": true,
       "jars": [
         "file:///opt/flink/jars/flink-connector-kafka-3.2.0-1.18.jar",
         "file:///opt/flink/jars/kafka-clients-3.4.0.jar",

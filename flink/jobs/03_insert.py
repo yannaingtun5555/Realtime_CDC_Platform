@@ -32,8 +32,9 @@ def main() -> None:
     env = StreamExecutionEnvironment.get_execution_environment()
     env.enable_checkpointing(job.get("checkpoint_interval", 10000))
     env.set_parallelism(job.get("parallelism", 2))
-    for jar in TABLE_SINK_JARS:
-        env.add_jars(jar)
+    # BUG FIX: JARs were added twice — via env.add_jars() AND pipeline.jars.
+    # Double registration can cause LinkageError from duplicate class definitions.
+    # pipeline.jars is the correct single mechanism for the Table API path.
 
     table_env = StreamTableEnvironment.create(env)
     table_env.get_config().set("pipeline.jars", ";".join(TABLE_SINK_JARS))

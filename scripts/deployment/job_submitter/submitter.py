@@ -78,7 +78,9 @@ def get_latest_savepoint(job_name: str) -> str | None:
         return None
     savepoints.sort(reverse=True)
     latest_key = savepoints[0][1]
-    return f"{SAVEPOINT_BASE_DIR}/{job_name.replace(' ', '_')}/{latest_key}"
+    # BUG FIX: mc ls --json returns folder keys with a trailing '/'; strip it
+    # so the assembled savepoint path doesn't contain a double slash.
+    return f"{SAVEPOINT_BASE_DIR}/{job_name.replace(' ', '_')}/{latest_key.rstrip('/')}"
 
 
 def job_is_running(job_name: str) -> bool:
@@ -114,9 +116,20 @@ def submit_job(job_config: dict, from_savepoint: str | None = None) -> tuple[boo
     cmd = ["flink", "run", "-m", jobmanager, "-d"]
     if from_savepoint:
         cmd.extend(["--fromSavepoint", from_savepoint])
-    for jar in job_config.get("jars", []):
-        cmd.extend(["-C", jar])
+
+    # BUG FIX: Table API jobs (table_api: true) manage their own JARs via
+    # pipeline.jars inside the Python script. Passing the same Iceberg/Hadoop
+    # JARs via '-C' loads them into the Flink CLI JVM, which causes a
+    # LinkageError (commons-cli version conflict with hadoop-common).
+    # The Dockerfile comment explicitly warns: keep these out of /opt/flink/lib
+    # — the same logic applies to '-C' which also loads into the CLI JVM.
+    # For DataStream API jobs (01, 02), '-C' is the correct mechanism.
+    if not job_config.get("table_api"):
+        for jar in job_config.get("jars", []):
+            cmd.extend(["-C", jar])
+
     cmd.extend(["-py", job_config["py_file"]])
+    print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     combined = (result.stdout or "") + (result.stderr or "")
     if result.stdout:

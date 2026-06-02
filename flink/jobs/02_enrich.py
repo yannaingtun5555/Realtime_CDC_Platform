@@ -4,7 +4,7 @@ import json
 import time
 
 from pyflink.common.typeinfo import Types
-from pyflink.datastream.functions import FilterFunction, MapFunction
+from pyflink.datastream.functions import FlatMapFunction
 
 from job_utils import (
     build_execution_env,
@@ -19,18 +19,21 @@ JOB_NAME = "CDC Enrich Job"
 OP_LABELS = {"c": "INSERT", "r": "READ", "u": "UPDATE", "d": "DELETE"}
 
 
-class NonNullFilter(FilterFunction):
-    def filter(self, value: str) -> bool:
-        return value is not None
+class ShallowEnrich(FlatMapFunction):
+    """Enrich a captured CDC event, emitting 0 records on bad input.
 
+    BUG FIX: Was MapFunction returning None into a Types.STRING() stream.
+    Flink's typed DataStream cannot hold null values — this caused runtime
+    NullPointerException / serialization failures before the downstream
+    NonNullFilter ever ran. FlatMapFunction emits 0 or 1 elements cleanly.
+    """
 
-class ShallowEnrich(MapFunction):
-    def map(self, value: str):
+    def flat_map(self, value: str):
         try:
             event = json.loads(value)
             operation = event.get("operation")
             if not operation:
-                return None
+                return
             after = event.get("after") or {}
             before = event.get("before") or {}
             payload = after if operation != "d" else before
@@ -39,7 +42,7 @@ class ShallowEnrich(MapFunction):
             record_key = (
                 f"{table_name}:{record_id}" if record_id is not None else f"{table_name}:unknown"
             )
-            return json.dumps(
+            yield json.dumps(
                 {
                     "db_name": event.get("db_name", "unknown"),
                     "table_name": table_name,
@@ -53,7 +56,7 @@ class ShallowEnrich(MapFunction):
                 }
             )
         except (json.JSONDecodeError, TypeError):
-            return None
+            return
 
 
 def main() -> None:
@@ -65,8 +68,7 @@ def main() -> None:
     )
     stream = read_stream(env, source, "Captured CDC Stream")
     enriched = (
-        stream.map(ShallowEnrich(), output_type=Types.STRING())
-        .filter(NonNullFilter())
+        stream.flat_map(ShallowEnrich(), output_type=Types.STRING())
         .name("Shallow Enrich")
     )
     enriched.sink_to(kafka_sink(job["output_topic"])).name(
